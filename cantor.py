@@ -1,75 +1,42 @@
-# cantor_layers_colored.py
-# Classic layered rendering of the Cantor set (bars per iteration).
-# Vectorised with PyTorch; each level gets a different color; saves an image.
-
-import os
-import time
 import torch
 import matplotlib.pyplot as plt
+from matplotlib import cm
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print("Using device:", device)
+def cantor_mask(level: int, width: int, device: str = "cpu") -> torch.Tensor:
+    base = 3 ** level if level > 0 else 1
+    x = torch.arange(width, device=device) * base // width
+    mask = torch.ones(width, dtype=torch.bool, device=device)
+    t = x.clone()
+    for _ in range(level):
+        mask &= (t.remainder(3) != 1)  # keep 0 and 2
+        t = torch.div(t, 3, rounding_mode='floor') # integer division
+    return mask
 
-DEPTH = 6    # number of iterations the deepest level have 2^6 lines
-LINEWIDTH = 12
-CMAP_NAME = "tab20"
-SAVE_PATH = "outputs/cantor_layers_colored.png"
+def cantor_ladder(n_levels=6, width=1200, bar_thickness=10, row_gap=8, device="cpu"):
+    height = (n_levels + 1) * (bar_thickness + row_gap) + row_gap
+    img = torch.ones((height, width, 3), dtype=torch.float32, device=device)  # white bg
 
-init_starts = torch.tensor([0.0], dtype=torch.float32, device=device) # start points
-init_lengths = torch.tensor([1.0], dtype=torch.float32, device=device) # initial lengths
-intervals_per_level = []
+    # colors on device
+    cmap = cm.get_cmap("tab10", n_levels + 1)
+    colors = torch.tensor([cmap(i)[:3] for i in range(n_levels + 1)],
+                          dtype=torch.float32, device=device)
 
-# --------------------
-# Build intervals (vectorised on PyTorch)
-# --------------------
-starts = init_starts
-lengths = init_lengths
-intervals_per_level.append((starts.clone(), lengths.clone()))
+    y = row_gap
+    for level in range(n_levels + 1):
+        mask1d = cantor_mask(level, width, device=device)  # (W,)
+        mask3d = mask1d.view(1, -1, 1).expand(bar_thickness, width, 3)
+        color  = colors[level].view(1, 1, 3).expand(bar_thickness, width, 3)
+        band = img[y:y+bar_thickness, :, :]
+        img[y:y+bar_thickness, :, :] = torch.where(mask3d, color, band)
+        y += bar_thickness + row_gap
+    return img
 
-for d in range(1, DEPTH + 1):
-    left_starts  = starts
-    right_starts = starts + 2.0 * lengths / 3.0
-    starts  = torch.cat([left_starts, right_starts], dim=0)
-    lengths = torch.cat([lengths / 3.0, lengths / 3.0], dim=0)
-    intervals_per_level.append((starts.clone(), lengths.clone()))
-# --------------------
-# Plot (each level in a different color)
-# --------------------
-os.makedirs(os.path.dirname(SAVE_PATH), exist_ok=True)
-plt.figure(figsize=(8, 4))
+# ---- run on GPU if available ----
+device = "cuda" if torch.cuda.is_available() else "cpu"
+img = cantor_ladder(n_levels=6, width=1400, bar_thickness=12, row_gap=10, device=device)
+
+plt.figure(figsize=(10, 3))
+plt.imshow(img.detach().cpu().numpy(), interpolation="nearest")
 plt.axis("off")
-
-cmap = plt.get_cmap(CMAP_NAME)
-n_levels = len(intervals_per_level)
-
-for row, (starts_lvl, lengths_lvl) in enumerate(intervals_per_level):
-    y_val = n_levels - 1 - row # reverse order: top level on top
-    t = row / max(1, n_levels - 1)
-    color = cmap(t)
-
-    xs0 = starts_lvl #line left
-    xs1 = starts_lvl + lengths_lvl #line right
-    ys  = torch.full_like(starts_lvl, float(y_val))
-
-    # 转为 numpy 供 matplotlib 使用
-    plt.hlines(
-        y=ys.detach().cpu().numpy(),
-        xmin=xs0.detach().cpu().numpy(),
-        xmax=xs1.detach().cpu().numpy(),
-        linewidth=LINEWIDTH,
-        color=color
-    )
-
-plt.xlim(-0.02, 1.02)
-plt.ylim(-0.5, n_levels - 0.5)
-plt.title("Cantor Set — layered construction (middle third removed each level)")
-
-plt.savefig(SAVE_PATH, dpi=200, bbox_inches="tight")
-print(f"Saved to: {SAVE_PATH}")
 plt.show()
 
-
-plt.xlim(-0.02, 1.02)
-plt.ylim(-0.5, len(intervals_per_level) - 0.5)
-plt.title("Cantor Set — layered construction (remove middle third each level)")
-plt.show()
